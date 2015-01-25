@@ -1,0 +1,172 @@
+---
+title: "Activity Quality Prediction"
+author: "MW"
+date: "Friday, January 23, 2015"
+output: html_document
+---
+
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+### Data
+There are two data sets: training data (https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and test data (https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).
+
+```{r}
+# Load packages:
+library(caret)
+library(e1071)
+
+# Load data:
+test <- read.csv("pml-testing.csv")
+train <- read.csv("pml-training.csv")
+
+# Data dimensions:
+dim(test)
+dim(train)
+which(names(test)!=names(train))
+names(train)[160]
+names(test)[160]
+
+# Frequency table of "classe"" variable in the training data set:
+table(train$classe)
+
+```
+After all, there are 160 variables in in both data sets. Only the last variables differs: In the test data set the "classe" variable, which has to be predicted, is actually missing. 
+
+
+### Goal
+The goal was to predict the "classe" variable from the other variables using a machine learning algorithm. 
+
+
+### Exploratory Data Analysis and Preprocessing
+```{r}
+# Which classes were set by read.table?
+unique(sapply(train, class))
+
+# Only look at the relevant belt, forearm, arm and dumbell measurements:
+belt.i <- which(grepl("belt", names(test)))
+forearm.i <- which(grepl("forearm", names(test)))
+arm.i <- which(grepl("arm", names(test)))
+dumbell.i <- which(grepl("dumb", names(test)))
+
+# How many variables for each class?
+length(belt.i); length(forearm.i); length(arm.i); length(dumbell.i)
+
+# Indices of all wanted variables:
+ok.i <- c(belt.i, forearm.i, arm.i, dumbell.i)
+
+# All variables left over and decision if to include them:
+names(train)[-ok.i]
+# X = index -> no
+# user name: might make sense for this exercicse but not for general context -> no
+# raw_timestamp_part_1 & raw_timestamp_part_2 -> no
+# cvtd_timestamp -> no
+# new_window -> no
+# test$num_window -> no
+
+# Remove unwanted columns and set all variables as numeric:
+train2 <- sapply(train[,ok.i], as.numeric)
+train3 <- cbind(train2, train$classe)
+
+dim(train2)
+dim(train3)
+
+test3 <- sapply(test[,c(ok.i,160)], as.numeric)
+
+# Test for (near) zero Variances:
+nearZeroVar(train3, saveMetric=T)
+
+# Remove those variables with NZV from data set:
+train4 <- as.data.frame(train3[, -nearZeroVar(train3)])
+test4 <- as.data.frame(test3[, -nearZeroVar(train3)])
+
+# Check for NAs:
+NApercent <- sapply(train4, function(x) sum(is.na(x))/dim(train4)[1]*100)
+length(NApercent)
+highNA.i <- which(NApercent > 50)
+
+# Remove according columns with over 50% NAs:
+train5 <- train4[,-highNA.i]
+test5 <- test4[,-highNA.i]
+
+# Add back the "classe" variable to the training set:
+train6 <- data.frame(train5[-66], classe=train$classe)
+
+# Divide training data set for Cross Validation:
+set.seed(555)
+train.i <- createDataPartition(y = trainPC$classe, p = 0.8, list = FALSE)
+trainCV_raw <- train6[train.i,]
+testCV_raw <- train6[-train.i,]
+
+rownames(trainCV_raw) <- NULL
+rownames(testCV_raw) <- NULL
+```
+
+### Model Selection:
+I decided to do 10-fold CV (repeated 10 times) and used the trainControl function in R to apply it directly into the train method from the caret package.
+```{r}
+CVopt <- trainControl(method="repeatedcv", number=10, repeats=10)
+```
+
+I fitted several different models and compared the in sample accuracy to select "the best" model. For Boosting with regressions trees (method="GBM"), linear discriminent analysis (method="LDA"), quadratic discriminent analysis (method="QDA") and decision trees (method="rpart") the in sample accuracy varied between 0.51 (LDA) to 0.83 (rpart). By far the highest accuracy was achieved by the random forest algorithm (ACC=0.99) so i decided to use that model.
+
+
+```{r, eval=FALSE}
+modRF <- train(classe ~., preProcess=c("center", "scale"), method="rf",
+                data=trainCV_raw, trControl=CVopt)
+```
+
+```{r, echo=FALSE}
+# I had to load the model after fitting it seperatly before, cause i got several error messages while trying to fit in Knitr...
+load("savedfiles.RData")
+modRF <- modRF_final
+
+```
+
+```{r}
+modRF
+```
+
+
+The out of sample accuracy was estimated using the testCV set which was not used for training but includes the "classe" variable as being part of the original training set (see above).
+
+```{r, eval=FALSE}
+testCV_pred <- predict(modRF, newdata=testCV_raw)
+```
+
+```{r}
+confusionMatrix(data=testCV_pred, reference=testCV_raw$classe)
+```
+
+The out of sample accuracy (estimated with CV) is very high at above 99%. The according error rate therefore is below 1%. The confusion matrix given above includes additional class specific statistics.
+
+### Prediction
+I used the same random forest model as above to predict the "classe" variable on the "real" test data set.
+
+```{r, eval=FALSE}
+test_pred <- predict(modRF, newdata=test5)
+```
+
+```{r}
+# Saving test predictions - each in 1 file:
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+
+pml_write_files(test_pred)
+```
+For this specific test set of 20 observations the automatic control mechanism of the Practical Machine Learning Course at Coursera showed an accuracy of 100% for my model.
+
+### Reference
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3PeCfSJLA
+
+
+
